@@ -9,39 +9,40 @@
 #include "corpus.h"
 #include "utils.h"
 
-#define ZETA 0.5
-#define TAU 0.5
-#define ALPHA 1.0
-#define BETA 1.0
-#define GAMMA 1.0
-#define LAMBDA 4.0
-#define DELTA 2         //5
-#define METROPOLIS_HASTINGS true
-#define MAX_ITER 50     //1000
-#define INF -1e50
-#define INIT_Z_SIZE 20
-#define INIT_C_SIZE 10
-#define INIT_B_SIZE 50
+#define INIT_Z_SIZE 50
+#define INIT_C_SIZE 50
+#define INIT_B_SIZE 100
 #define EPSILON 1e-6
 
 DtcHyperPara::DtcHyperPara()
 {
-  zeta_ = ZETA;
-  tau_ = TAU;
-  alpha_ = ALPHA;
-  beta_ = BETA;
-  gamma_ = GAMMA;
-  lambda_ = LAMBDA;
-  delta_ = DELTA;
-  save_lag_ = 100;
-  metropolis_hastings_ = METROPOLIS_HASTINGS;
-  sample_hyperparameter_ = false;
-  max_iter_ = MAX_ITER;
+
 }
 
-void DtcHyperPara::SetPara()
+void DtcHyperPara::SetPara(double alpha, double beta, double gamma,
+                          double tau, double zeta, double lambda, double lambda_con,
+                          int max_iter, int save_lag, int delta, int burnin,
+                          bool sample_hyperparameter, bool metropolis)
 {
+  zeta_ = zeta;
+  tau_ = tau;
+  alpha_ = alpha;
+  beta_ = beta;
+  gamma_ = gamma;
+  lambda_ = lambda;
+  lambda_con_ = lambda_con;
+  delta_ = delta;
+  save_lag_ = save_lag;
+  metropolis_hastings_ = metropolis;
+  sample_hyperparameter_ = sample_hyperparameter;
+  max_iter_ = max_iter;
+  burnin_ = burnin;
 
+  printf("\nHyper-parameter setting:\nalpha = %.2f\nbeta = %.2f\ngamma = %.2f\ntau = %.2f\nzeta = %.2f\nlambda = %.1f\nlambda_concentration = %.1f\nDelta = %2d\nsave_lag = %d\nmetropolis_hastings = %d\nsample_hyperparameter = %d\nmax_iter = %d\nburnin = %d\n\n",
+      alpha_, beta_, gamma_,
+      tau_, zeta_, lambda_, lambda_con_, delta_,
+      save_lag_, metropolis_hastings_,
+      sample_hyperparameter_, max_iter_, burnin_);
 }
 
 
@@ -91,6 +92,29 @@ void DocState::UpdateTokenState(DocState* d)
   assert(d->len_doc_ == len_doc_);
   memcpy(tokens_, d->tokens_, sizeof(TokenState)*len_doc_);
 }
+
+
+CommState::CommState()
+{
+  num_docs_ = 0;
+  num_tables_ = 0;
+  num_tables_init_ = 0;
+  alive_b_ = NULL;
+
+  word_counts_ = 0;
+  tables_to_topics_.clear();
+  word_counts_by_b_.clear();
+
+  decay_kernel_word_counts_by_b_.clear();
+  decay_kernel_num_docs_ = 0.0;
+  decay_kernel_word_counts_ = 0.0;
+
+  parti_counts_ = 0;
+  parti_counts_by_r_ = NULL;
+  decay_kernel_zeta_ = 0.0;
+  decay_kernel_zeta_by_r_ = NULL;
+}
+
 
 //Do not consider participants info.
 CommState::CommState(int num_tables)
@@ -194,8 +218,11 @@ int* CommState::CompactTables(int* k_to_new_k)
     if (b < num_tables_init_ || word_counts_by_b_[b] > 0)
     {
       b_to_new_b[b] = new_b;
-      k = tables_to_topics_[b];
-      tables_to_topics_[new_b] = k_to_new_k[k];
+      if(!(b < num_tables_init_ && !alive_b_[b]))
+      {
+        k = tables_to_topics_[b];
+        tables_to_topics_[new_b] = k_to_new_k[k];
+      }
       swap_vec_element(word_counts_by_b_, new_b, b);
       new_b ++;
     }
@@ -227,6 +254,36 @@ void CommState::UpdateCommSS(CommState* c_state)
   word_counts_ = c_state->word_counts_;
   tables_to_topics_ = c_state->tables_to_topics_;
   word_counts_by_b_ = c_state->word_counts_by_b_;
+}
+
+EpochState::EpochState(int e_id, int size_vocab, int size_participants)
+{
+  epoch_id_ = e_id;
+  num_docs_ = 0;
+  total_tokens_ = 0;
+  size_participants_ = size_participants;
+  size_vocab_ = size_vocab;
+
+  doc_states_ = NULL;
+  comm_states_.clear();
+
+  alive_c_ = NULL;
+  alive_z_ = NULL;
+  num_comms_ = 0;
+  num_topics_ = 0;
+  num_comms_init_ = 0;
+  num_topics_init_ = 0;
+
+  total_num_tables_ = 0;
+  num_tables_by_z_.clear();
+  word_counts_by_z_.clear();
+  word_counts_by_zw_.clear();
+
+  decay_kernel_num_tables_ = 0.0;
+  decay_kernel_num_tables_by_z_.clear();
+  decay_kernel_tau_by_z_.clear();
+  decay_kernel_tau_by_zw_.clear();
+  decay_kernel_num_docs_ = 0.0;
 }
 
 
@@ -264,8 +321,6 @@ EpochState::EpochState(Corpus* c, int e_id)
 //copy epoch state, build one community state, one doc state, but decay_kernel informations.
 EpochState::EpochState(EpochState* e, DocState* d, int comm)
 {
-  int k;
-
   //copy epoch_state
   epoch_id_ = e->epoch_id_;
   num_docs_ = e->num_docs_;
@@ -299,7 +354,7 @@ EpochState::EpochState(EpochState* e, DocState* d, int comm)
   int size = e->word_counts_by_zw_.size();
   if(static_cast<int>(word_counts_by_zw_.size()) < size)
     word_counts_by_zw_.resize(size, NULL);
-  for(k = 0; k < size; k++)
+  for(int k = 0; k < size; k++)
   {
     if(e->word_counts_by_zw_[k])
     {
@@ -313,7 +368,7 @@ EpochState::EpochState(EpochState* e, DocState* d, int comm)
   decay_kernel_tau_by_z_ = e->decay_kernel_tau_by_z_;
   size = static_cast<int>(e->decay_kernel_tau_by_zw_.size());
   decay_kernel_tau_by_zw_.resize(size, NULL);
-  for(k = 0; k < size; k++)
+  for(int k = 0; k < size; k++)
   {
     if(e->decay_kernel_tau_by_zw_[k])
     {
@@ -499,7 +554,7 @@ void EpochState::SampleWordAssignment(bool remove, DocState* doc_state, int word
       f[k] = 0.0;
     q_k[k] = f_new;
   }
-  f_new += hyper->gamma_/size_vocab_;
+  f_new += hyper->gamma_ / size_vocab_;
   q_k[num_topics_] = f_new;
   f_new = f_new / (total_num_tables_ + decay_kernel_num_tables_ + hyper->gamma_);
 
@@ -1115,7 +1170,6 @@ double EpochState::SampleCommunitiesMH(vector<double>& q, vector<double>& q_k,
   {
     DocState* doc_state = doc_states_[j];
     comm_old = doc_state->comm_assignment_;
-
     if(static_cast<int>(q.size()) < num_comms_ + 1)
       q.resize(2 * num_comms_ + 1, 0.0);
 
@@ -1254,13 +1308,13 @@ void EpochState::CompactEpochStates()
   num_comms_ = new_c;
 
   //compact tables
-  CommState* c_state = NULL;
   vector<int*> b_to_new_b_by_c;
   b_to_new_b_by_c.resize(num_comms_, NULL);
   for(c = 0; c < num_comms_; c++)
   {
+    CommState* c_state = NULL;
     c_state = comm_states_[c];
-    if(c_state)
+    if(c >= num_comms_init_ || alive_c_[c])
       b_to_new_b_by_c[c] = c_state->CompactTables(k_to_new_k);
   }
 
@@ -1300,13 +1354,13 @@ void EpochState::ReshuffleEpoch()
   }
 }
 
-void EpochState::NextEpochGibbsSweep(bool permute, DtcHyperPara* hyper)
+double EpochState::NextEpochGibbsSweep(bool permute, DtcHyperPara* hyper)
 {
   if(permute)
     ReshuffleEpoch();
 
   int j, i;
-  double mh_accpt_ratio;
+  double mh_accpt_ratio = -1.0;
   vector<double> q_k, q_b, q_c, f;
   DocState* doc_state;
 
@@ -1328,6 +1382,10 @@ void EpochState::NextEpochGibbsSweep(bool permute, DtcHyperPara* hyper)
   SampleTables(q_k, f, hyper);
 
   CompactEpochStates();
+
+  //EpochDebug();
+
+  return mh_accpt_ratio;
 }
 
 void EpochState::InitEpochGibbsState(DtcHyperPara* hyper)
@@ -1357,7 +1415,7 @@ void EpochState::InitEpochGibbsState(DtcHyperPara* hyper)
     q[num_comms_] = hyper->alpha_ + total;
 
     double u = runiform() * q[num_comms_];
-    for (c = 0; c < num_comms_ + 1; c++)
+    for(c = 0; c < num_comms_ + 1; c++)
       if (u < q[c]) break;
 
     doc_states_[j]->comm_assignment_ = c;
@@ -1381,61 +1439,939 @@ void EpochState::InitEpochGibbsState(DtcHyperPara* hyper)
   }
 }
 
-
-double EpochState::comm_partition_likelihood(CommState* c_state, DtcHyperPara* hyper)
+double EpochState::DocPartitionLikelihood(DtcHyperPara* hyper)
 {
-  double likelihood = c_state->num_tables_ * log(hyper->beta_) - log_factorial(c_state->word_counts_, hyper->beta_);
-  /// use n! = Gamma(n+1), that is log(n!) = lgamma(n+1)
-  for(int b = 0; b < c_state->num_tables_; b++)
-  {
-    if(c_state->word_counts_by_b_[b] > 0)
-      likelihood += lgamma(c_state->word_counts_by_b_[b]);
-  }
-  return likelihood;
-}
+  int c, num_alive_comms = num_comms_;
 
-double EpochState::table_partition_likelihood(DtcHyperPara* hyper)
-{
-  double likelihood = num_topics_ * log(hyper->gamma_) - log_factorial(total_num_tables_, hyper->gamma_);
-  /// use n! = Gamma(n+1), that is log(n!) = lgamma(n+1)
-  for(int k = 0; k < num_topics_; k++)
-  {
-    if(num_tables_by_z_[k] > 0)
-      likelihood += lgamma(num_tables_by_z_[k]);
-  }
-  return likelihood;
-}
+  for(c = 0; c < num_comms_init_; c++)
+    if(!alive_c_[c])
+      num_alive_comms--;
 
-double EpochState::data_likelihood(DtcHyperPara* hyper)
-{
-  double likelihood = num_topics_ * lgamma(size_vocab_ * hyper->tau_);
-  double lgamma_tau = lgamma(hyper->tau_);
-
-  for (int k = 0; k < num_topics_; k++)
+  assert(num_alive_comms > 0);
+  double likelihood = num_alive_comms * log(hyper->alpha_) - log_factorial(num_docs_ + decay_kernel_num_docs_, hyper->alpha_);
+  for(c = 0; c < num_comms_; c++)
   {
-    likelihood -= lgamma(size_vocab_ * hyper->tau_ + word_counts_by_z_[k]);
-    for (int w = 0; w < size_vocab_; w++)
+    if(c >= num_comms_init_)
     {
-      if (word_counts_by_zw_[k][w] > 0)
-      {
-        likelihood += lgamma(word_counts_by_zw_[k][w] + hyper->tau_) - lgamma_tau;
-      }
+      assert(comm_states_[c]->num_docs_ > 0);
+      likelihood += lgamma(comm_states_[c]->num_docs_);
+    }
+    if(c < num_comms_init_ && alive_c_[c])
+      likelihood += lgamma(comm_states_[c]->num_docs_ + comm_states_[c]->decay_kernel_num_docs_);
+  }
+  return likelihood;
+}
+
+
+double EpochState::CommPartitionLikelihood(CommState* c_state, DtcHyperPara* hyper)
+{
+  int b, num_alive_tables = c_state->num_tables_;
+
+  for(b = 0; b < c_state->num_tables_init_; b++)
+    if(!c_state->alive_b_[b])
+      num_alive_tables--;
+
+  assert(num_alive_tables > 0);
+  double likelihood = num_alive_tables * log(hyper->beta_) - log_factorial(c_state->word_counts_ + c_state->decay_kernel_word_counts_, hyper->beta_);
+  /// use n! = Gamma(n+1), that is log(n!) = lgamma(n+1)
+  for(b = 0; b < c_state->num_tables_; b++)
+  {
+    if(b >= c_state->num_tables_init_)
+    {
+      assert(c_state->word_counts_by_b_[b] > 0);
+      likelihood += lgamma(c_state->word_counts_by_b_[b]);
+    }
+    if(b < c_state->num_tables_init_ && c_state->alive_b_[b])
+      likelihood += lgamma(c_state->word_counts_by_b_[b] + c_state->decay_kernel_word_counts_by_b_[b]);
+  }
+  return likelihood;
+}
+
+double EpochState::TablePartitionLikelihood(DtcHyperPara* hyper)
+{
+  int k, num_alive_topics = num_topics_;
+
+  for(k = 0; k < num_topics_init_; k++)
+    if(!alive_z_[k])
+      num_alive_topics--;
+
+  double likelihood = num_alive_topics * log(hyper->gamma_) - log_factorial(total_num_tables_ + decay_kernel_num_tables_, hyper->gamma_);
+  /// use n! = Gamma(n+1), that is log(n!) = lgamma(n+1)
+  for(k = 0; k < num_topics_; k++)
+  {
+    if(k >= num_topics_init_)
+    {
+      assert(num_tables_by_z_[k] > 0);
+      likelihood += lgamma(num_tables_by_z_[k]);
+    }
+    if(k < num_topics_init_ && alive_z_[k])
+      likelihood += lgamma(num_tables_by_z_[k] + decay_kernel_num_tables_by_z_[k]);
+  }
+  return likelihood;
+}
+
+
+double EpochState::DataLikelihood(DtcHyperPara* hyper)
+{
+  int k, w, c, p;
+  double likelihood = 0.0;
+  double lgamma_tau = lgamma(hyper->tau_);
+  double lgamma_zeta = lgamma(hyper->zeta_);
+
+  for(k = 0; k < num_topics_; k++)      //P(W|Z)
+  {
+    if(k >= num_topics_init_)
+    {
+      likelihood += lgamma(size_vocab_ * hyper->tau_);
+      likelihood -= lgamma(size_vocab_ * hyper->tau_ + word_counts_by_z_[k]);
+      for(w = 0; w < size_vocab_; w++)
+        if(word_counts_by_zw_[k][w] > 0)
+          likelihood += lgamma(word_counts_by_zw_[k][w] + hyper->tau_) - lgamma_tau;
+    }
+    if(k < num_topics_init_ && alive_z_[k])
+    {
+      likelihood += lgamma(size_vocab_ * hyper->tau_ + decay_kernel_tau_by_z_[k]);
+      likelihood -= lgamma(size_vocab_ * hyper->tau_ + word_counts_by_z_[k] + decay_kernel_tau_by_z_[k]);
+      for(w = 0; w < size_vocab_; w++)
+        if(word_counts_by_zw_[k][w] > 0)
+          likelihood += lgamma(word_counts_by_zw_[k][w] + hyper->tau_ + decay_kernel_tau_by_zw_[k][w])
+            - lgamma(hyper->tau_ + decay_kernel_tau_by_zw_[k][w]);
     }
   }
+
+  for(c = 0; c < num_comms_; c++)       //P(P|C)
+  {
+    CommState* c_state = comm_states_[c];
+    if(c >= num_comms_init_)
+    {
+      likelihood += lgamma(size_participants_ * hyper->zeta_);
+      likelihood -= lgamma(size_participants_ * hyper->zeta_ + c_state->parti_counts_);
+      for(p = 0; p < size_participants_; p++)
+        if(c_state->parti_counts_by_r_[p] > 0)
+          likelihood += lgamma(c_state->parti_counts_by_r_[p] + hyper->zeta_) - lgamma_zeta;
+    }
+    if(c < num_comms_init_ && alive_c_[c])
+    {
+      likelihood += lgamma(size_participants_ * hyper->zeta_ + c_state->decay_kernel_zeta_);
+      likelihood -= lgamma(size_participants_ * hyper->zeta_ + c_state->parti_counts_ + c_state->decay_kernel_zeta_);
+      for(p = 0; p < size_participants_; p++)
+        if(c_state->parti_counts_by_r_[p] > 0)
+          likelihood += lgamma(c_state->parti_counts_by_r_[p] + hyper->zeta_ + c_state->decay_kernel_zeta_by_r_[p])
+            - lgamma(hyper->zeta_ + c_state->decay_kernel_zeta_by_r_[p]);
+    }
+  }
+
   return likelihood;
 }
+
+
 
 double EpochState::JointLikelihood(DtcHyperPara* hyper)
 {
   double likelihood = 0.0;
-/*  for(int c = 0; c < num_comms_; c++)
+  likelihood += DocPartitionLikelihood(hyper);                          //doc partition
+  for(int c = 0; c < num_comms_; c++)
   {
-    likelihood += comm_partition_likelihood(comm_states_[c], hyper);
+    if(c < num_comms_init_ && !alive_c_[c])  continue;
+    likelihood += CommPartitionLikelihood(comm_states_[c], hyper);      //comm partition
   }
-  likelihood += table_partition_likelihood(hyper);*/
-  likelihood += data_likelihood(hyper);
+  likelihood += TablePartitionLikelihood(hyper);                        //table partition
+  likelihood += DataLikelihood(hyper);                                  //P(W|Z)*P(P|C), Dirichlet-multinomial
 
   return likelihood;
+}
+
+
+double EpochState::GetPartiLhood(DocState* d, int comm, DtcHyperPara* hyper)
+{
+  double ret = 0.0;
+  int parti;
+
+  if(comm < num_comms_init_ && alive_c_[comm])
+  {
+    for(int r = 0; r < d->num_participants_; r++)
+    {
+      parti = d->participants_[r];
+      ret += log( (hyper->zeta_ + comm_states_[comm]->parti_counts_by_r_[parti] + comm_states_[comm]->decay_kernel_zeta_by_r_[parti])
+          / (hyper->zeta_*size_participants_ + comm_states_[comm]->parti_counts_ + comm_states_[comm]->decay_kernel_zeta_) );
+    }
+  }
+
+  if(comm >= num_comms_init_)
+  {
+    for(int r = 0; r < d->num_participants_; r++)
+    {
+      parti = d->participants_[r];
+      ret += log( (hyper->zeta_ + comm_states_[comm]->parti_counts_by_r_[parti])
+          / (hyper->zeta_*size_participants_ + comm_states_[comm]->parti_counts_) );
+    }
+  }
+
+  return ret;
+}
+
+double EpochState::GetWordLhood(DocState* d, int comm, DtcHyperPara* hyper)
+{
+  double ret = 0.0;
+  CommState* c_state = comm_states_[comm];
+  double* f = new double [num_topics_];
+  memset(f, 0.0, sizeof(double)*num_topics_);
+
+  for(int i = 0; i < d->len_doc_; i++)
+  {
+    int w = d->tokens_[i].token_index_;
+
+    double f_new = 0.0;
+    for(int k = 0; k < num_topics_; k++)
+    {
+      if(k < num_topics_init_ && alive_z_[k])
+      {
+        f[k] = (hyper->tau_ + word_counts_by_zw_[k][w] + decay_kernel_tau_by_zw_[k][w])
+                                            /(size_vocab_*hyper->tau_ + word_counts_by_z_[k] + decay_kernel_tau_by_z_[k]);
+        f_new += f[k] * (num_tables_by_z_[k] + decay_kernel_num_tables_by_z_[k]);
+      }
+      else if(k >= num_topics_init_)
+      {
+        f[k] = (hyper->tau_ + word_counts_by_zw_[k][w])
+                                            /(size_vocab_*hyper->tau_ + word_counts_by_z_[k]);
+        f_new += f[k] * (num_tables_by_z_[k]);
+      }
+      else
+        f[k] = 0.0;
+    }
+    f_new += hyper->gamma_ / size_vocab_;
+    f_new = f_new / (hyper->gamma_ + total_num_tables_ + decay_kernel_num_tables_);
+
+    double p_new = 0.0;
+    for(int b = 0; b < c_state->num_tables_; b++)
+    {
+      int k = c_state->tables_to_topics_[b];
+      if(b < c_state->num_tables_init_ && c_state->alive_b_[b])
+        p_new += f[k] * (c_state->word_counts_by_b_[b] + c_state->decay_kernel_word_counts_by_b_[b]);
+      if(b >= c_state->num_tables_init_)
+        p_new += f[k] * (c_state->word_counts_by_b_[b]);
+    }
+    p_new += hyper->beta_ * f_new;
+    p_new = log(p_new) - log(c_state->word_counts_ + c_state->decay_kernel_word_counts_ + hyper->beta_);
+    ret += p_new;
+  }
+  delete [] f;
+  return ret;
+}
+
+void EpochState::CommPropGivenDoc(DocState* d_state, double* q_c, DtcHyperPara* hyper)
+{
+  for(int c = 0; c < num_comms_; c++)
+  {
+    CommState* c_state = comm_states_[c];
+    if(c < num_comms_init_ && !alive_c_[c])
+    {
+      q_c[c] = log(0);
+      continue;
+    }
+
+    double f = 0.0;
+    f += GetPartiLhood(d_state, c, hyper);
+    //f += GetWordLhood(d_state, c, hyper);
+    f += log( (hyper->alpha_ + c_state->num_docs_) / (hyper->alpha_*num_comms_ + num_docs_) );
+    q_c[c] = f;
+  }
+  log_normalize(q_c, num_comms_);
+  q_c[0] = exp(q_c[0]);
+  double total_q = q_c[0];
+  for(int c = 1; c < num_comms_; c++)
+  {
+    q_c[c] = exp(q_c[c]);
+    total_q += q_c[c];
+  }
+}
+/*
+double EpochState::GetPerplexity(DtcHyperPara* hyper)
+{
+  int j, i, c, b, k, w;
+  int num_alive_comms = num_comms_;
+  double perp = 0.0;
+
+  double* q_c = new double [num_comms_];
+  double* f = new double [num_topics_];
+  memset(q_c, 0.0, sizeof(double)*num_comms_);
+  memset(f, 0.0, sizeof(double)*num_topics_);
+
+  for(j = 0; j < num_docs_; j++)
+  {
+    DocState* doc_state = doc_states_[j];
+    CommPropGivenDoc(doc_state, q_c, hyper);
+    for(i = 0; i < doc_state->len_doc_; i++)
+    {
+      w = doc_state->tokens_[i].token_index_;
+
+      double f_new = 0.0;
+      for(k = 0; k < num_topics_; k++)
+      {
+        if(k < num_topics_init_ && alive_z_[k])
+        {
+          f[k] = (hyper->tau_ + word_counts_by_zw_[k][w] + decay_kernel_tau_by_zw_[k][w])
+                        /(size_vocab_*hyper->tau_ + word_counts_by_z_[k] + decay_kernel_tau_by_z_[k]);
+          f_new += f[k] * (num_tables_by_z_[k] + decay_kernel_num_tables_by_z_[k]);
+        }
+        else if(k >= num_topics_init_)
+        {
+          f[k] = (hyper->tau_ + word_counts_by_zw_[k][w])
+                        /(size_vocab_*hyper->tau_ + word_counts_by_z_[k]);
+          f_new += f[k] * (num_tables_by_z_[k]);
+        }
+        else
+          f[k] = 0.0;
+      }
+      f_new += hyper->gamma_ / size_vocab_;
+      f_new = f_new / (hyper->gamma_ + total_num_tables_ + decay_kernel_num_tables_);
+
+      double p_w = 0.0;
+      for(c = 0; c < num_comms_; c++)       // sum_c sum_z sum_b P(c)P(b|c)P(w|z)
+      {
+        if((c < num_comms_init_ && alive_c_[c]) || c >= num_comms_init_)
+        {
+          CommState* c_state = comm_states_[c];
+
+          double p_new = 0.0;
+          for(b = 0; b < c_state->num_tables_; b++)
+          {
+            k = c_state->tables_to_topics_[b];
+            if(b < c_state->num_tables_init_ && c_state->alive_b_[b])
+              p_new += f[k] * (c_state->word_counts_by_b_[b] + c_state->decay_kernel_word_counts_by_b_[b]);
+            if(b >= c_state->num_tables_init_)
+              p_new += f[k] * (c_state->word_counts_by_b_[b]);
+          }
+          p_new += hyper->beta_ * f_new;
+          //p_new = log(p_new) - log(c_state->word_counts_ + c_state->decay_kernel_word_counts_ + hyper->beta_);
+          p_new = (p_new) / (c_state->word_counts_ + c_state->decay_kernel_word_counts_ + hyper->beta_);
+
+          //p_w += exp(p_new + q_c[c]);
+          p_w += p_new * q_c[c];
+        }
+      }
+      perp += log(p_w);
+    }
+  }
+
+  delete [] q_c;
+  delete [] f;
+
+  perp = exp(-perp/total_tokens_);
+  return perp;
+}*/
+/*
+double EpochState::GetPerplexity(DtcHyperPara* hyper)
+{
+  int j, i, c, b, k, w;
+  double perp = 0.0;
+
+  double* q_k = new double [num_topics_];
+  double* f = new double [num_topics_];
+  memset(f, 0.0, sizeof(double)*num_topics_);
+
+  for(j = 0; j < num_docs_; j++)
+  {
+    DocState* doc_state = doc_states_[j];
+    memset(q_k, 0.0, sizeof(double)*num_topics_);
+    for(i = 0; i < doc_state->len_doc_; i++)
+    {
+      c = doc_state->comm_assignment_;
+      CommState* c_state = comm_states_[c];
+      w = doc_state->tokens_[i].token_index_;
+      b = doc_state->tokens_[i].table_assignment_;
+      k = c_state->tables_to_topics_[b];
+      q_k[k] += 1.0;
+    }
+    for(k = 0; k < num_topics_; k++)
+    {
+      q_k[k] = q_k[k]/doc_state->len_doc_;
+    }
+
+    for(i = 0; i < doc_state->len_doc_; i++)
+    {
+      w = doc_state->tokens_[i].token_index_;
+
+      double f_new = 0.0;
+      for(k = 0; k < num_topics_; k++)
+      {
+        if(k < num_topics_init_ && alive_z_[k])
+        {
+          f[k] = (hyper->tau_ + word_counts_by_zw_[k][w] + decay_kernel_tau_by_zw_[k][w])
+                            /(size_vocab_*hyper->tau_ + word_counts_by_z_[k] + decay_kernel_tau_by_z_[k]);
+          f_new += f[k] * (num_tables_by_z_[k] + decay_kernel_num_tables_by_z_[k]);
+        }
+        else if(k >= num_topics_init_)
+        {
+          f[k] = (hyper->tau_ + word_counts_by_zw_[k][w])
+                            /(size_vocab_*hyper->tau_ + word_counts_by_z_[k]);
+          f_new += f[k] * (num_tables_by_z_[k]);
+        }
+        else
+          f[k] = 0.0;
+      }
+      f_new += hyper->gamma_ / size_vocab_;
+      f_new = f_new / (hyper->gamma_ + total_num_tables_ + decay_kernel_num_tables_);
+
+      double p_w = 0.0;
+      for(k = 0; k < num_topics_; k++)
+      {
+        p_w += f[k] * q_k[k];
+      }
+      perp += log(p_w);
+    }
+  }
+
+  delete [] q_k;
+  delete [] f;
+
+  perp = exp(-perp/total_tokens_);
+  return perp;
+}*/
+
+
+
+double EpochState::GetPerplexity(DtcHyperPara* hyper)
+{
+  int j, i, b, k, w;
+  double perp = 0.0;
+
+  double* f = new double [num_topics_];
+  memset(f, 0.0, sizeof(double)*num_topics_);
+
+  for(j = 0; j < num_docs_; j++)
+  {
+    double p_d = 0.0;
+    DocState* doc_state = doc_states_[j];
+    for(i = 0; i < doc_state->len_doc_; i++)
+    {
+      w = doc_state->tokens_[i].token_index_;
+
+      double f_new = 0.0;
+      for(k = 0; k < num_topics_; k++)
+      {
+        if(k < num_topics_init_ && alive_z_[k])
+        {
+          f[k] = (hyper->tau_ + word_counts_by_zw_[k][w] + decay_kernel_tau_by_zw_[k][w])
+                        /(size_vocab_*hyper->tau_ + word_counts_by_z_[k] + decay_kernel_tau_by_z_[k]);
+          f_new += f[k] * (num_tables_by_z_[k] + decay_kernel_num_tables_by_z_[k]);
+        }
+        else if(k >= num_topics_init_)
+        {
+          f[k] = (hyper->tau_ + word_counts_by_zw_[k][w])
+                        /(size_vocab_*hyper->tau_ + word_counts_by_z_[k]);
+          f_new += f[k] * (num_tables_by_z_[k]);
+        }
+        else
+          f[k] = 0.0;
+      }
+      f_new += hyper->gamma_ / size_vocab_;
+      f_new = f_new / (hyper->gamma_ + total_num_tables_ + decay_kernel_num_tables_);
+
+
+      CommState* c_state = comm_states_[doc_states_[j]->comm_assignment_];
+
+      double p_new = 0.0;
+      for(b = 0; b < c_state->num_tables_; b++)
+      {
+        k = c_state->tables_to_topics_[b];
+        if(b < c_state->num_tables_init_ && c_state->alive_b_[b])
+          p_new += f[k] * (c_state->word_counts_by_b_[b] + c_state->decay_kernel_word_counts_by_b_[b]);
+        if(b >= c_state->num_tables_init_)
+          p_new += f[k] * (c_state->word_counts_by_b_[b]);
+      }
+      p_new += hyper->beta_ * f_new;
+      p_new = log(p_new) - log(c_state->word_counts_ + c_state->decay_kernel_word_counts_ + hyper->beta_);
+      perp += p_new;
+      p_d += p_new;
+    }
+  }
+
+  delete [] f;
+
+  return exp(-perp/total_tokens_);
+}
+
+
+double EpochState::GetPerplexityNosum(DtcHyperPara* hyper)
+{
+  int j, i, b, k, w;
+  double perp = 0.0;
+
+  double f;
+
+  for(j = 0; j < num_docs_; j++)
+  {
+    DocState* doc_state = doc_states_[j];
+    CommState* c_state = comm_states_[doc_state->comm_assignment_];
+    for(i = 0; i < doc_state->len_doc_; i++)
+    {
+      w = doc_state->tokens_[i].token_index_;
+      b = doc_state->tokens_[i].table_assignment_;
+      k = c_state->tables_to_topics_[b];
+      f = (hyper->tau_ + word_counts_by_zw_[k][w])/(size_vocab_*hyper->tau_ + word_counts_by_z_[k]);
+
+      perp += log(f);
+    }
+  }
+
+  return exp(-perp/total_tokens_);
+}
+
+void EpochState::SaveState(const char* directory)
+{
+  int comm, w, k, b, j, i, p;
+  CommState* c_state;
+  DocState* d_state;
+
+  char filename[500];
+
+  sprintf(filename, "%s/model-topic-epoch%d.dat", directory, epoch_id_);
+  FILE* file = fopen(filename, "w");
+  for(k = 0; k < num_topics_; k++)
+  {
+    if(k >= num_topics_init_ || (k < num_topics_init_ && alive_z_[k]))
+    {
+      for(w = 0; w < size_vocab_; w++)
+        fprintf(file, "%d ", word_counts_by_zw_[k][w]);
+      fprintf(file, "\n");
+    }
+    else
+      fprintf(file, "\n");
+  }
+  fclose(file);
+
+  sprintf(filename, "%s/model-parti-epoch%d.dat", directory, epoch_id_);
+  file = fopen(filename, "w");
+  for(comm = 0; comm < num_comms_; comm++)
+  {
+    c_state = comm_states_[comm];
+    if(comm >= num_comms_init_ || (comm < num_comms_init_ && alive_c_[comm]))
+    {
+      for(p = 0; p < size_participants_; p++)
+        fprintf(file, "%d ", c_state->parti_counts_by_r_[p]);
+      fprintf(file, "\n");
+    }
+    else
+      fprintf(file, "\n");
+  }
+  fclose(file);
+
+  sprintf(filename, "%s/model-state-epoch%d.dat", directory, epoch_id_);
+  file = fopen(filename, "w");
+  for (j = 0; j < num_docs_; j++)
+  {
+    d_state = doc_states_[j];
+    int doc_id = d_state->doc_id_;
+    for(i = 0; i < d_state->len_doc_; i++)
+    {
+      comm = d_state->comm_assignment_;
+      c_state = comm_states_[comm];
+      w = d_state->tokens_[i].token_index_;
+      b = d_state->tokens_[i].table_assignment_;
+      k = c_state->tables_to_topics_[b];
+      fprintf(file, "%d %d %d %d %d\n", doc_id, comm, w, b, k);
+    }
+  }
+  fclose(file);
+}
+
+
+void EpochState::SaveState(const char* directory, int iter)
+{
+  int comm, w, k, b, j, i, p;
+  CommState* c_state;
+  DocState* d_state;
+
+  char filename[500];
+
+  sprintf(filename, "%s/model-topic-epoch%d-%d.dat", directory, epoch_id_, iter);
+  FILE* file = fopen(filename, "w");
+  for(k = 0; k < num_topics_; k++)
+  {
+    if(k >= num_topics_init_ || (k < num_topics_init_ && alive_z_[k]))
+    {
+      for(w = 0; w < size_vocab_; w++)
+        fprintf(file, "%d ", word_counts_by_zw_[k][w]);
+      fprintf(file, "\n");
+    }
+    else
+      fprintf(file, "\n");
+  }
+  fclose(file);
+
+  sprintf(filename, "%s/model-parti-epoch%d-%d.dat", directory, epoch_id_, iter);
+  file = fopen(filename, "w");
+  for(comm = 0; comm < num_comms_; comm++)
+  {
+    c_state = comm_states_[comm];
+    if(comm >= num_comms_init_ || (comm < num_comms_init_ && alive_c_[comm]))
+    {
+      for(p = 0; p < size_participants_; p++)
+        fprintf(file, "%d ", c_state->parti_counts_by_r_[p]);
+      fprintf(file, "\n");
+    }
+    else
+      fprintf(file, "\n");
+  }
+  fclose(file);
+
+  sprintf(filename, "%s/model-state-epoch%d-%d.dat", directory, epoch_id_, iter);
+  file = fopen(filename, "w");
+  for (j = 0; j < num_docs_; j++)
+  {
+    d_state = doc_states_[j];
+    int doc_id = d_state->doc_id_;
+    for(i = 0; i < d_state->len_doc_; i++)
+    {
+      comm = d_state->comm_assignment_;
+      c_state = comm_states_[comm];
+      w = d_state->tokens_[i].token_index_;
+      b = d_state->tokens_[i].table_assignment_;
+      k = c_state->tables_to_topics_[b];
+      fprintf(file, "%d %d %d %d %d\n", doc_id, comm, w, b, k);
+    }
+  }
+  fclose(file);
+}
+
+
+void EpochState::SaveModel(const char* directory)
+{
+
+  char name[500];
+  sprintf(name, "%s/e%d_model", directory, epoch_id_);
+  FILE * file = fopen(name, "wb");
+
+  sprintf(name, "%s/save%d", directory, epoch_id_);
+  FILE * f = fopen(name, "w");
+
+  fwrite(&num_topics_, sizeof(int), 1, file);
+  fprintf(f, "%d ", num_topics_);
+  fwrite(&num_comms_, sizeof(int), 1, file);
+  fprintf(f, "%d ", num_comms_);
+  fwrite(&num_topics_init_, sizeof(int), 1, file);
+  fprintf(f, "%d ", num_topics_init_);
+  fwrite(&num_comms_init_, sizeof(int), 1, file);
+  fprintf(f, "%d ", num_comms_init_);
+  if(num_topics_init_ > 0)
+    fwrite(alive_z_, sizeof(bool), num_topics_init_, file);
+  if(num_comms_init_ > 0)
+    fwrite(alive_c_, sizeof(bool), num_comms_init_, file);
+
+  fwrite(&total_num_tables_, sizeof(int), 1, file);
+  fprintf(f, "%d ", total_num_tables_);
+  fwrite(&decay_kernel_num_tables_, sizeof(double), 1, file);
+  fprintf(f, "%f ", decay_kernel_num_tables_);
+  fwrite(&decay_kernel_num_docs_, sizeof(double), 1, file);
+  fprintf(f, "%f ", decay_kernel_num_docs_);
+
+  for(int k = 0; k < num_topics_; k++)
+  {
+    if(k < num_topics_init_ && !alive_z_[k])    continue;
+    fwrite(&(num_tables_by_z_[k]), sizeof(int), 1, file);
+    fwrite(&(word_counts_by_z_[k]), sizeof(int), 1, file);
+    fwrite(word_counts_by_zw_[k], sizeof(int), size_vocab_, file);
+    if(num_topics_init_ > 0 && k < num_topics_init_)
+    {
+      fwrite(&(decay_kernel_num_tables_by_z_[k]), sizeof(double), 1, file);
+      fwrite(&(decay_kernel_tau_by_z_[k]), sizeof(double), 1, file);
+      fwrite(decay_kernel_tau_by_zw_[k], sizeof(double), size_vocab_, file);
+    }
+  }
+
+  for(int c = 0; c < num_comms_; c++)
+  {
+    if(c < num_comms_init_ && !alive_c_[c])     continue;
+    fwrite(&(comm_states_[c]->num_docs_), sizeof(int), 1, file);
+    fwrite(&(comm_states_[c]->num_tables_), sizeof(int), 1, file);
+    fwrite(&(comm_states_[c]->num_tables_init_), sizeof(int), 1, file);
+    fwrite(&(comm_states_[c]->word_counts_), sizeof(int), 1, file);
+    fwrite(&(comm_states_[c]->parti_counts_), sizeof(int), 1, file);
+    fwrite(&(comm_states_[c]->decay_kernel_word_counts_), sizeof(double), 1, file);
+    fwrite(&(comm_states_[c]->decay_kernel_num_docs_), sizeof(double), 1, file);
+    fwrite(&(comm_states_[c]->decay_kernel_zeta_), sizeof(double), 1, file);
+    fwrite(comm_states_[c]->parti_counts_by_r_, sizeof(int), size_participants_, file);
+
+    fprintf(f, "%d %d %d %d ", comm_states_[c]->num_docs_, comm_states_[c]->num_tables_, comm_states_[c]->num_tables_init_, comm_states_[c]->word_counts_);
+
+
+    if(comm_states_[c]->num_tables_init_ > 0)
+    {
+      fwrite(comm_states_[c]->alive_b_, sizeof(bool), comm_states_[c]->num_tables_init_, file);
+      fwrite(comm_states_[c]->decay_kernel_zeta_by_r_, sizeof(double), size_participants_, file);
+      for(int b = 0; b < comm_states_[c]->num_tables_init_; b++)
+      {
+        if(!comm_states_[c]->alive_b_[b])  continue;
+        fwrite(&(comm_states_[c]->decay_kernel_word_counts_by_b_[b]), sizeof(double), 1, file);
+      }
+    }
+    for(int b = 0; b < comm_states_[c]->num_tables_; b++)
+    {
+      if(b < comm_states_[c]->num_tables_init_ && !comm_states_[c]->alive_b_[b])        continue;
+      fwrite(&(comm_states_[c]->tables_to_topics_[b]), sizeof(int), 1, file);
+      fwrite(&(comm_states_[c]->word_counts_by_b_[b]), sizeof(int), 1, file);
+    }
+  }
+
+  fclose(file);
+  fclose(f);
+}
+
+void EpochState::LoadModel(const char* directory, int epoch)
+{
+  char name[500];
+  sprintf(name, "%s/e%d_model", directory, epoch);
+  FILE * file = fopen(name, "rb");
+
+  sprintf(name, "%s/load%d", directory, epoch);
+  FILE * f = fopen(name, "w");
+
+  fread(&num_topics_, sizeof(int), 1, file);
+  fprintf(f, "%d ", num_topics_);
+  fread(&num_comms_, sizeof(int), 1, file);
+  fprintf(f, "%d ", num_comms_);
+  fread(&num_topics_init_, sizeof(int), 1, file);
+  fprintf(f, "%d ", num_topics_init_);
+  fread(&num_comms_init_, sizeof(int), 1, file);
+  fprintf(f, "%d ", num_comms_init_);
+  if(num_topics_init_ > 0)
+  {
+    alive_z_ = new bool [num_topics_init_];
+    fread(alive_z_, sizeof(bool), num_topics_init_, file);
+  }
+  if(num_comms_init_ > 0)
+  {
+    alive_c_ = new bool [num_comms_init_];
+    fread(alive_c_, sizeof(bool), num_comms_init_, file);
+  }
+
+  fread(&total_num_tables_, sizeof(int), 1, file);
+  fprintf(f, "%d ", total_num_tables_);
+  fread(&decay_kernel_num_tables_, sizeof(double), 1, file);
+  fprintf(f, "%f ", decay_kernel_num_tables_);
+  fread(&decay_kernel_num_docs_, sizeof(double), 1, file);
+  fprintf(f, "%f ", decay_kernel_num_docs_);
+
+  num_tables_by_z_.resize(num_topics_, 0);
+  word_counts_by_z_.resize(num_topics_, 0);
+  word_counts_by_zw_.resize(num_topics_, NULL);
+  decay_kernel_num_tables_by_z_.resize(num_topics_init_, 0.0);
+  decay_kernel_tau_by_z_.resize(num_topics_init_, 0.0);
+  decay_kernel_tau_by_zw_.resize(num_topics_init_, NULL);
+  for(int k = 0; k < num_topics_; k++)
+  {
+    if(k < num_topics_init_ && !alive_z_[k])    continue;
+    fread(&(num_tables_by_z_[k]), sizeof(int), 1, file);
+    fread(&(word_counts_by_z_[k]), sizeof(int), 1, file);
+    word_counts_by_zw_[k] = new int [size_vocab_];
+    fread(word_counts_by_zw_[k], sizeof(int), size_vocab_, file);
+    if(num_topics_init_ > 0 && k < num_topics_init_)
+    {
+      fread(&(decay_kernel_num_tables_by_z_[k]), sizeof(double), 1, file);
+      fread(&(decay_kernel_tau_by_z_[k]), sizeof(double), 1, file);
+      decay_kernel_tau_by_zw_[k] = new double [size_vocab_];
+      fread(decay_kernel_tau_by_zw_[k], sizeof(double), size_vocab_, file);
+    }
+  }
+
+  comm_states_.resize(num_comms_, NULL);
+  for(int c = 0; c < num_comms_; c++)
+  {
+    if(c < num_comms_init_ && !alive_c_[c])     continue;
+    comm_states_[c] = new CommState();
+    fread(&(comm_states_[c]->num_docs_), sizeof(int), 1, file);
+    fread(&(comm_states_[c]->num_tables_), sizeof(int), 1, file);
+    fread(&(comm_states_[c]->num_tables_init_), sizeof(int), 1, file);
+    fread(&(comm_states_[c]->word_counts_), sizeof(int), 1, file);
+    fread(&(comm_states_[c]->parti_counts_), sizeof(int), 1, file);
+    fread(&(comm_states_[c]->decay_kernel_word_counts_), sizeof(double), 1, file);
+    fread(&(comm_states_[c]->decay_kernel_num_docs_), sizeof(double), 1, file);
+    fread(&(comm_states_[c]->decay_kernel_zeta_), sizeof(double), 1, file);
+    comm_states_[c]->parti_counts_by_r_ = new int [size_participants_];
+    fread(comm_states_[c]->parti_counts_by_r_, sizeof(int), size_participants_, file);
+    comm_states_[c]->tables_to_topics_.resize(comm_states_[c]->num_tables_, -1);
+    comm_states_[c]->word_counts_by_b_.resize(comm_states_[c]->num_tables_, 0);
+
+    fprintf(f, "%d %d %d %d ", comm_states_[c]->num_docs_, comm_states_[c]->num_tables_, comm_states_[c]->num_tables_init_, comm_states_[c]->word_counts_);
+
+    if(comm_states_[c]->num_tables_init_ > 0)
+    {
+      comm_states_[c]->alive_b_ = new bool [comm_states_[c]->num_tables_init_];
+      fread(comm_states_[c]->alive_b_, sizeof(bool), comm_states_[c]->num_tables_init_, file);
+      comm_states_[c]->decay_kernel_zeta_by_r_ = new double [size_participants_];
+      fread(comm_states_[c]->decay_kernel_zeta_by_r_, sizeof(double), size_participants_, file);
+      comm_states_[c]->decay_kernel_word_counts_by_b_.resize(comm_states_[c]->num_tables_init_, 0.0);
+      for(int b = 0; b < comm_states_[c]->num_tables_init_; b++)
+      {
+        if(!comm_states_[c]->alive_b_[b])  continue;
+        fread(&(comm_states_[c]->decay_kernel_word_counts_by_b_[b]), sizeof(double), 1, file);
+      }
+    }
+    for(int b = 0; b < comm_states_[c]->num_tables_; b++)
+    {
+      if(b < comm_states_[c]->num_tables_init_ && !comm_states_[c]->alive_b_[b])
+      {
+        comm_states_[c]->tables_to_topics_[b] = -1;
+        comm_states_[c]->word_counts_by_b_[b] = 0;
+        continue;
+      }
+      fread(&(comm_states_[c]->tables_to_topics_[b]), sizeof(int), 1, file);
+      fread(&(comm_states_[c]->word_counts_by_b_[b]), sizeof(int), 1, file);
+    }
+  }
+
+  fclose(file);
+  fclose(f);
+}
+
+
+bool EpochState::StateCheckSum()
+{
+  bool status_OK = true;
+  int sum = 0;
+  for(int k = 0; k < num_topics_; k ++)
+  {
+    if(k < num_topics_init_ && !alive_z_[k])    continue;
+    sum += word_counts_by_z_[k];
+  }
+  if(sum != total_tokens_)
+  {
+    printf("\ntotal words does not match\n");
+    status_OK = false;
+  }
+  for(int k = 0; k < num_topics_; k ++)
+  {
+    if(k < num_topics_init_ && !alive_z_[k])    continue;
+    sum = 0;
+    for(int w = 0; w < size_vocab_; w ++)
+    {
+      sum += word_counts_by_zw_[k][w];
+    }
+    if(sum != word_counts_by_z_[k])
+    {
+      printf("\nin topic %d, total words does not match\n", k);
+      status_OK = false;
+    }
+  }
+  sum = 0;
+  for(int k = 0; k < num_topics_; k ++)
+  {
+    if(k < num_topics_init_ && !alive_z_[k])    continue;
+    sum += num_tables_by_z_[k];
+  }
+  if(sum != total_num_tables_)
+  {
+    printf("\ntotal num tables does not match\n");
+    status_OK = false;
+  }
+
+  sum = 0;
+  for(int c = 0; c < num_comms_; c++)
+  {
+    if(c < num_comms_init_ && !alive_c_[c])  continue;
+    CommState* c_state = comm_states_[c];
+    sum += c_state->num_docs_;
+  }
+  if(sum != num_docs_)
+  {
+    printf("\ntotal num docs does not match\n");
+    status_OK = false;
+  }
+  for(int c = 0; c < num_comms_; c++)
+  {
+    sum = 0;
+    if(c < num_comms_init_ && !alive_c_[c])  continue;
+    CommState* c_state = comm_states_[c];
+    for(int b = 0; b < c_state->num_tables_; b++)
+    {
+      if(b < c_state->num_tables_init_ && !c_state->alive_b_[b])  continue;
+      sum += c_state->word_counts_by_b_[b];
+    }
+    if(sum != c_state->word_counts_)
+    {
+      printf("\nin comm %d, total words does not match\n", c);
+      status_OK = false;
+    }
+  }
+
+
+  double sum_kernel = 0.0;
+  for(int k = 0; k < num_topics_init_; k ++)
+  {
+    if(k < num_topics_init_ && !alive_z_[k])    continue;
+    sum_kernel += decay_kernel_num_tables_by_z_[k];
+  }
+  if(sum_kernel != decay_kernel_num_tables_)
+  {
+    printf("\ndecay_kernel_num_tables_ does not match\n");
+    status_OK = false;
+  }
+
+  sum_kernel = 0;
+  for(int c = 0; c < num_comms_; c++)
+  {
+    if(c < num_comms_init_ && !alive_c_[c])  continue;
+    CommState* c_state = comm_states_[c];
+    sum_kernel += c_state->decay_kernel_num_docs_;
+  }
+  if(sum_kernel != decay_kernel_num_docs_)
+  {
+    printf("\ndecay_kernel_num_docs_ does not match\n");
+    status_OK = false;
+  }
+
+  return status_OK;
+}
+
+void EpochState::EpochDebug()
+{
+  assert(StateCheckSum());
+
+  printf("********************************************************\n");
+  for(int k = 0; k < num_topics_; k++)
+    printf("word counts by z %d = %d\n", k, word_counts_by_z_[k]);
+  for(int k = 0; k < num_topics_; k++)
+    printf("num tables by z %d = %d\n", k, num_tables_by_z_[k]);
+  for(int c = 0; c < num_comms_; c++)
+  {
+    if(c < num_comms_init_ && !alive_c_[c])     continue;
+    printf("num docs by c %d = %d\n", c, comm_states_[c]->num_docs_);
+  }
+  for(int c = 0; c < num_comms_; c++)
+  {
+    if(c < num_comms_init_ && !alive_c_[c])     continue;
+    printf("participants counts by c %d = %d\n", c, comm_states_[c]->parti_counts_);
+  }
+
+/*  int* word_counts_by_z = new int [num_topics_];
+  for(int c = 0; c < num_comms_; c++)
+  {
+    memset(word_counts_by_z, 0, sizeof(int)*num_topics_);
+    CommState* c_state = comm_states_[c];
+    for(int b = 0; b < c_state->num_tables_; b++)
+    {
+      word_counts_by_z[c_state->tables_to_topics_[b]] += c_state->word_counts_by_b_[b];
+    }
+    printf("comm %d:\n", c);
+    for(int k = 0; k < num_topics_; k++)
+    {
+      printf("    word counts by z %d = %d\n", k, word_counts_by_z[k]);
+    }
+  }
+  delete [] word_counts_by_z;*/
+
+  for(int c = 0; c < num_comms_; c++)
+  {
+    if(c < num_comms_init_ && !alive_c_[c])     continue;
+    CommState* c_state = comm_states_[c];
+    printf("comm %d:\n", c);
+    for(int b = 0; b < c_state->num_tables_; b++)
+    {
+      if(b < c_state->num_tables_init_ && !c_state->alive_b_[b])        continue;
+      printf("    word counts by b %d = %d  (z %d)\n", b, c_state->word_counts_by_b_[b], c_state->tables_to_topics_[b]);
+    }
+  }
 }
 
 
@@ -1471,11 +2407,199 @@ double DtcState::ComputeKernel(double lambda, int delta, int v1, double v2, int 
   return exp(-1/lambda) * (v1 + v2) - exp(-(delta+1)/lambda) * v3;
 }
 
+
+void DtcState::InitNextEpochInfer(int epoch, double lambda, double lambda_con, int delta)
+{
+
+  int k, c, b, w, r;
+  EpochState* e = epoch_states_[epoch];
+
+  if(epoch > 0)
+  {
+    e->num_comms_init_ = epoch_states_[epoch-1]->num_comms_;
+    e->num_topics_init_ = epoch_states_[epoch-1]->num_topics_;
+    e->num_comms_ = e->num_comms_init_;
+    e->num_topics_ = e->num_topics_init_;
+  }
+
+  //allocate necessary memory and initialize them first.
+  if(e->num_comms_init_ > 0)
+    e->alive_c_ = new bool[e->num_comms_init_];
+  if(e->num_topics_init_ > 0)
+    e->alive_z_ = new bool[e->num_topics_init_];
+
+  bool z_init = e->num_topics_ < INIT_Z_SIZE;
+  bool c_init = e->num_comms_ < INIT_C_SIZE;
+  e->num_tables_by_z_.resize(z_init?INIT_Z_SIZE:(e->num_topics_init_ + 1), 0);
+  e->word_counts_by_z_.resize(z_init?INIT_Z_SIZE:(e->num_topics_init_ + 1), 0);
+  e->word_counts_by_zw_.resize(z_init?INIT_Z_SIZE:(e->num_topics_init_ + 1), NULL);
+
+  e->decay_kernel_num_tables_by_z_.resize(e->num_topics_init_, 0.0);
+  e->decay_kernel_tau_by_z_.resize(e->num_topics_init_, 0.0);
+  e->decay_kernel_tau_by_zw_.resize(e->num_topics_init_, NULL);
+
+  e->comm_states_.resize(c_init?INIT_C_SIZE:(e->num_comms_init_ + 1), NULL);
+
+  if(epoch == 0)
+  {
+    for(k = 0; k < (int)e->word_counts_by_zw_.size(); k++)
+    {
+      e->word_counts_by_zw_[k] = new int[size_vocab_];
+      memset(e->word_counts_by_zw_[k], 0, sizeof(int)*size_vocab_);
+    }
+    for(c = 0; c < (int)e->comm_states_.size(); c++)
+      e->comm_states_[c] = new CommState(INIT_B_SIZE, e->size_participants_);
+  }
+  else
+  {
+    //compute alive_z
+    memcpy(e->alive_z_, epoch_states_[epoch-1]->alive_z_, sizeof(bool)*(epoch_states_[epoch-1]->num_topics_init_));
+    memset(e->alive_z_ + epoch_states_[epoch-1]->num_topics_init_, true, sizeof(bool)*(e->num_topics_init_ - epoch_states_[epoch-1]->num_topics_init_));
+//    for(k = 0; k < epoch_states_[epoch-1]->num_topics_init_; k++)
+//    {
+//      if(e->alive_z_[k] && epoch > delta && epoch_states_[epoch-delta-1]->num_topics_ > k)
+//        if(ComputeKernel(lambda_con, delta, epoch_states_[epoch-1]->word_counts_by_z_[k],
+//            epoch_states_[epoch-1]->decay_kernel_tau_by_z_[k], epoch_states_[epoch-delta-1]->word_counts_by_z_[k]) < EPSILON)
+//          e->alive_z_[k] = false;
+//    }
+    //initialize word_counts_by_zw_
+    for(k = 0; k < (int)e->word_counts_by_zw_.size(); k++)
+      if(k >= e->num_topics_init_ || e->alive_z_[k])
+      {
+        e->word_counts_by_zw_[k] = new int[size_vocab_];
+        memset(e->word_counts_by_zw_[k], 0, sizeof(int)*size_vocab_);
+      }
+    //compute decay_kernel related to z.
+    double total_kernel = 0.0;
+    for(k = 0; k < e->num_topics_init_; k++)
+    {
+      if(e->alive_z_[k])
+      {
+//        if(epoch > delta && epoch_states_[epoch-delta-1]->num_topics_ > k)
+//        {
+//          e->decay_kernel_tau_by_z_[k] = ComputeKernel(lambda_con, delta, epoch_states_[epoch-1]->word_counts_by_z_[k],
+//              epoch_states_[epoch-1]->decay_kernel_tau_by_z_[k], epoch_states_[epoch-delta-1]->word_counts_by_z_[k]);
+//          e->decay_kernel_tau_by_zw_[k] = new double [size_vocab_];
+//          for(w = 0; w < size_vocab_; w++)
+//            e->decay_kernel_tau_by_zw_[k][w] = ComputeKernel(lambda_con, delta, epoch_states_[epoch-1]->word_counts_by_zw_[k][w],
+//                epoch_states_[epoch-1]->decay_kernel_tau_by_zw_[k][w], epoch_states_[epoch-delta-1]->word_counts_by_zw_[k][w]);
+//          e->decay_kernel_num_tables_by_z_[k] = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->num_tables_by_z_[k],
+//              epoch_states_[epoch-1]->decay_kernel_num_tables_by_z_[k], epoch_states_[epoch-delta-1]->num_tables_by_z_[k]);
+//        }
+        if(epoch_states_[epoch-1]->num_topics_init_ > k)
+        {
+          e->decay_kernel_tau_by_z_[k] = ComputeKernel(lambda_con, delta, epoch_states_[epoch-1]->word_counts_by_z_[k],
+              epoch_states_[epoch-1]->decay_kernel_tau_by_z_[k]);
+          e->decay_kernel_tau_by_zw_[k] = new double [size_vocab_];
+          for(w = 0; w < size_vocab_; w++)
+            e->decay_kernel_tau_by_zw_[k][w] = ComputeKernel(lambda_con, delta, epoch_states_[epoch-1]->word_counts_by_zw_[k][w],
+                epoch_states_[epoch-1]->decay_kernel_tau_by_zw_[k][w]);
+          e->decay_kernel_num_tables_by_z_[k] = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->num_tables_by_z_[k],
+              epoch_states_[epoch-1]->decay_kernel_num_tables_by_z_[k]);
+        }
+        else
+        {
+          e->decay_kernel_tau_by_z_[k] = ComputeKernel(lambda_con, delta, epoch_states_[epoch-1]->word_counts_by_z_[k]);
+          e->decay_kernel_tau_by_zw_[k] = new double [size_vocab_];
+          for(w = 0; w < size_vocab_; w++)
+            e->decay_kernel_tau_by_zw_[k][w] = ComputeKernel(lambda_con, delta, epoch_states_[epoch-1]->word_counts_by_zw_[k][w]);
+          e->decay_kernel_num_tables_by_z_[k] = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->num_tables_by_z_[k]);
+        }
+        total_kernel += e->decay_kernel_num_tables_by_z_[k];
+      }
+    }
+    e->decay_kernel_num_tables_ = total_kernel;
+
+    //compute alive_c, then alive_b in each alive c
+    memcpy(e->alive_c_, epoch_states_[epoch-1]->alive_c_, sizeof(bool)*(epoch_states_[epoch-1]->num_comms_init_));
+    memset(e->alive_c_ + epoch_states_[epoch-1]->num_comms_init_, true, sizeof(bool)*(e->num_comms_init_ - epoch_states_[epoch-1]->num_comms_init_));
+//    for(c = 0; c < epoch_states_[epoch-1]->num_comms_init_; c++)
+//    {
+//      if(e->alive_c_[c] && epoch > delta && epoch_states_[epoch-delta-1]->num_comms_ > c)
+//        if(ComputeKernel(lambda, delta, epoch_states_[epoch-1]->comm_states_[c]->num_docs_, epoch_states_[epoch-1]->comm_states_[c]->decay_kernel_num_docs_,
+//            epoch_states_[epoch-delta-1]->comm_states_[c]->num_docs_) < EPSILON)
+//          e->alive_c_[c] = false;
+//    }
+    //compute kernel related to community.
+    total_kernel = 0.0;
+    for(c = 0; c < (int)e->comm_states_.size(); c++)
+    {
+      if(c < e->num_comms_init_ && e->alive_c_[c])
+      {
+        e->comm_states_[c] = new CommState(epoch_states_[epoch-1]->comm_states_[c], e->size_participants_);
+//        if(epoch > delta && epoch_states_[epoch-delta-1]->num_comms_ > c)
+//        {
+//          e->comm_states_[c]->decay_kernel_num_docs_ = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->comm_states_[c]->num_docs_,
+//              epoch_states_[epoch-1]->comm_states_[c]->decay_kernel_num_docs_, epoch_states_[epoch-delta-1]->comm_states_[c]->num_docs_);
+//          e->comm_states_[c]->decay_kernel_word_counts_ = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->comm_states_[c]->word_counts_,
+//              epoch_states_[epoch-1]->comm_states_[c]->decay_kernel_word_counts_, epoch_states_[epoch-delta-1]->comm_states_[c]->word_counts_);
+//          e->comm_states_[c]->decay_kernel_zeta_ = ComputeKernel(lambda_con, delta, epoch_states_[epoch-1]->comm_states_[c]->parti_counts_,
+//              epoch_states_[epoch-1]->comm_states_[c]->decay_kernel_zeta_, epoch_states_[epoch-delta-1]->comm_states_[c]->parti_counts_);
+//          for(r = 0; r < e->size_participants_; r++)
+//            e->comm_states_[c]->decay_kernel_zeta_by_r_[r] = ComputeKernel(lambda_con, delta, epoch_states_[epoch-1]->comm_states_[c]->parti_counts_by_r_[r],
+//                epoch_states_[epoch-1]->comm_states_[c]->decay_kernel_zeta_by_r_[r], epoch_states_[epoch-delta-1]->comm_states_[c]->parti_counts_by_r_[r]);
+//        }
+        if(epoch_states_[epoch-1]->num_comms_init_ > c)
+        {
+          e->comm_states_[c]->decay_kernel_num_docs_ = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->comm_states_[c]->num_docs_,
+              epoch_states_[epoch-1]->comm_states_[c]->decay_kernel_num_docs_);
+          e->comm_states_[c]->decay_kernel_word_counts_ = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->comm_states_[c]->word_counts_,
+              epoch_states_[epoch-1]->comm_states_[c]->decay_kernel_word_counts_);
+          e->comm_states_[c]->decay_kernel_zeta_ = ComputeKernel(lambda_con, delta, epoch_states_[epoch-1]->comm_states_[c]->parti_counts_,
+              epoch_states_[epoch-1]->comm_states_[c]->decay_kernel_zeta_);
+          for(r = 0; r < e->size_participants_; r++)
+            e->comm_states_[c]->decay_kernel_zeta_by_r_[r] = ComputeKernel(lambda_con, delta, epoch_states_[epoch-1]->comm_states_[c]->parti_counts_by_r_[r],
+                epoch_states_[epoch-1]->comm_states_[c]->decay_kernel_zeta_by_r_[r]);
+        }
+        else    //a community burned in epoch-1
+        {
+          e->comm_states_[c]->decay_kernel_num_docs_ = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->comm_states_[c]->num_docs_);
+          e->comm_states_[c]->decay_kernel_word_counts_ = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->comm_states_[c]->word_counts_);
+          e->comm_states_[c]->decay_kernel_zeta_ = ComputeKernel(lambda_con, delta, epoch_states_[epoch-1]->comm_states_[c]->parti_counts_);
+          for(r = 0; r < e->size_participants_; r++)
+            e->comm_states_[c]->decay_kernel_zeta_by_r_[r] = ComputeKernel(lambda_con, delta, epoch_states_[epoch-1]->comm_states_[c]->parti_counts_by_r_[r]);
+        }
+        total_kernel += e->comm_states_[c]->decay_kernel_num_docs_;
+
+        //compute alive_b
+        memcpy(e->comm_states_[c]->alive_b_, epoch_states_[epoch-1]->comm_states_[c]->alive_b_, sizeof(bool)*(epoch_states_[epoch-1]->comm_states_[c]->num_tables_init_));
+        memset(e->comm_states_[c]->alive_b_ + epoch_states_[epoch-1]->comm_states_[c]->num_tables_init_, true, sizeof(bool)*(e->comm_states_[c]->num_tables_init_ - epoch_states_[epoch-1]->comm_states_[c]->num_tables_init_));
+//        for(b = 0; b < epoch_states_[epoch-1]->comm_states_[c]->num_tables_init_; b++)
+//        {
+//          if(e->comm_states_[c]->alive_b_[b] && epoch > delta && epoch_states_[epoch-delta-1]->num_comms_ > c && epoch_states_[epoch-delta-1]->comm_states_[c]->num_tables_ > b)
+//            if(ComputeKernel(lambda, delta, epoch_states_[epoch-1]->comm_states_[c]->word_counts_by_b_[b],
+//                epoch_states_[epoch-1]->comm_states_[c]->decay_kernel_word_counts_by_b_[b], epoch_states_[epoch-delta-1]->comm_states_[c]->word_counts_by_b_[b]) < EPSILON)
+//              e->comm_states_[c]->alive_b_[b] = false;
+//        }
+        //compute kernel related to table
+        for(b = 0; b < e->comm_states_[c]->num_tables_init_; b++)
+        {
+          if(e->comm_states_[c]->alive_b_[b])
+          {
+//            if(epoch > delta && epoch_states_[epoch-delta-1]->num_comms_ > c && epoch_states_[epoch-delta-1]->comm_states_[c]->num_tables_ > b)
+//              e->comm_states_[c]->decay_kernel_word_counts_by_b_[b] = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->comm_states_[c]->word_counts_by_b_[b],
+//                  epoch_states_[epoch-1]->comm_states_[c]->decay_kernel_word_counts_by_b_[b], epoch_states_[epoch-delta-1]->comm_states_[c]->word_counts_by_b_[b]);
+            if(b < epoch_states_[epoch-1]->comm_states_[c]->num_tables_init_)
+              e->comm_states_[c]->decay_kernel_word_counts_by_b_[b] = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->comm_states_[c]->word_counts_by_b_[b],
+                  epoch_states_[epoch-1]->comm_states_[c]->decay_kernel_word_counts_by_b_[b]);
+            else
+              e->comm_states_[c]->decay_kernel_word_counts_by_b_[b] = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->comm_states_[c]->word_counts_by_b_[b]);
+          }
+        }
+      }
+      if(c >= e->num_comms_init_)
+        e->comm_states_[c] = new CommState(INIT_B_SIZE, e->size_participants_);
+    }
+    e->decay_kernel_num_docs_ = total_kernel;
+  }
+
+}
+
 /***
  * @brief: Build next epoch's states for sampling.
  * will not allocate memory for dead items.
  */
-void DtcState::InitNextEpoch(int epoch, double lambda, int delta)
+void DtcState::InitNextEpoch(int epoch, double lambda, double lambda_con, int delta)
 {
   int k, c, b, w, r;
   EpochState* e = epoch_states_[epoch];
@@ -1486,10 +2610,6 @@ void DtcState::InitNextEpoch(int epoch, double lambda, int delta)
     e->num_topics_init_ = epoch_states_[epoch-1]->num_topics_;
     e->num_comms_ = e->num_comms_init_;
     e->num_topics_ = e->num_topics_init_;
-    /*
-    for(c = 0; c < e->num_comms_init_; c++)
-      if(c >= epoch_states_[epoch-1]->num_comms_init_ || epoch_states_[epoch-1]->alive_c_[c])
-        e->total_num_tables_ += epoch_states_[epoch-1]->comm_states_[c]->num_tables_;*/
   }
 
   //allocate necessary memory and initialize them first.
@@ -1528,7 +2648,7 @@ void DtcState::InitNextEpoch(int epoch, double lambda, int delta)
     for(k = 0; k < epoch_states_[epoch-1]->num_topics_init_; k++)
     {
       if(e->alive_z_[k] && epoch > delta && epoch_states_[epoch-delta-1]->num_topics_ > k)
-        if(ComputeKernel(lambda, delta, epoch_states_[epoch-1]->word_counts_by_z_[k],
+        if(ComputeKernel(lambda_con, delta, epoch_states_[epoch-1]->word_counts_by_z_[k],
             epoch_states_[epoch-1]->decay_kernel_tau_by_z_[k], epoch_states_[epoch-delta-1]->word_counts_by_z_[k]) < EPSILON)
           e->alive_z_[k] = false;
     }
@@ -1547,32 +2667,32 @@ void DtcState::InitNextEpoch(int epoch, double lambda, int delta)
       {
         if(epoch > delta && epoch_states_[epoch-delta-1]->num_topics_ > k)
         {
-          e->decay_kernel_tau_by_z_[k] = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->word_counts_by_z_[k],
+          e->decay_kernel_tau_by_z_[k] = ComputeKernel(lambda_con, delta, epoch_states_[epoch-1]->word_counts_by_z_[k],
               epoch_states_[epoch-1]->decay_kernel_tau_by_z_[k], epoch_states_[epoch-delta-1]->word_counts_by_z_[k]);
           e->decay_kernel_tau_by_zw_[k] = new double [size_vocab_];
           for(w = 0; w < size_vocab_; w++)
-            e->decay_kernel_tau_by_zw_[k][w] = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->word_counts_by_zw_[k][w],
+            e->decay_kernel_tau_by_zw_[k][w] = ComputeKernel(lambda_con, delta, epoch_states_[epoch-1]->word_counts_by_zw_[k][w],
                 epoch_states_[epoch-1]->decay_kernel_tau_by_zw_[k][w], epoch_states_[epoch-delta-1]->word_counts_by_zw_[k][w]);
           e->decay_kernel_num_tables_by_z_[k] = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->num_tables_by_z_[k],
               epoch_states_[epoch-1]->decay_kernel_num_tables_by_z_[k], epoch_states_[epoch-delta-1]->num_tables_by_z_[k]);
         }
         else if(epoch_states_[epoch-1]->num_topics_init_ > k)
         {
-          e->decay_kernel_tau_by_z_[k] = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->word_counts_by_z_[k],
+          e->decay_kernel_tau_by_z_[k] = ComputeKernel(lambda_con, delta, epoch_states_[epoch-1]->word_counts_by_z_[k],
               epoch_states_[epoch-1]->decay_kernel_tau_by_z_[k]);
           e->decay_kernel_tau_by_zw_[k] = new double [size_vocab_];
           for(w = 0; w < size_vocab_; w++)
-            e->decay_kernel_tau_by_zw_[k][w] = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->word_counts_by_zw_[k][w],
+            e->decay_kernel_tau_by_zw_[k][w] = ComputeKernel(lambda_con, delta, epoch_states_[epoch-1]->word_counts_by_zw_[k][w],
                 epoch_states_[epoch-1]->decay_kernel_tau_by_zw_[k][w]);
           e->decay_kernel_num_tables_by_z_[k] = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->num_tables_by_z_[k],
               epoch_states_[epoch-1]->decay_kernel_num_tables_by_z_[k]);
         }
         else
         {
-          e->decay_kernel_tau_by_z_[k] = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->word_counts_by_z_[k]);
+          e->decay_kernel_tau_by_z_[k] = ComputeKernel(lambda_con, delta, epoch_states_[epoch-1]->word_counts_by_z_[k]);
           e->decay_kernel_tau_by_zw_[k] = new double [size_vocab_];
           for(w = 0; w < size_vocab_; w++)
-            e->decay_kernel_tau_by_zw_[k][w] = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->word_counts_by_zw_[k][w]);
+            e->decay_kernel_tau_by_zw_[k][w] = ComputeKernel(lambda_con, delta, epoch_states_[epoch-1]->word_counts_by_zw_[k][w]);
           e->decay_kernel_num_tables_by_z_[k] = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->num_tables_by_z_[k]);
         }
         total_kernel += e->decay_kernel_num_tables_by_z_[k];
@@ -1603,10 +2723,10 @@ void DtcState::InitNextEpoch(int epoch, double lambda, int delta)
               epoch_states_[epoch-1]->comm_states_[c]->decay_kernel_num_docs_, epoch_states_[epoch-delta-1]->comm_states_[c]->num_docs_);
           e->comm_states_[c]->decay_kernel_word_counts_ = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->comm_states_[c]->word_counts_,
               epoch_states_[epoch-1]->comm_states_[c]->decay_kernel_word_counts_, epoch_states_[epoch-delta-1]->comm_states_[c]->word_counts_);
-          e->comm_states_[c]->decay_kernel_zeta_ = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->comm_states_[c]->parti_counts_,
+          e->comm_states_[c]->decay_kernel_zeta_ = ComputeKernel(lambda_con, delta, epoch_states_[epoch-1]->comm_states_[c]->parti_counts_,
               epoch_states_[epoch-1]->comm_states_[c]->decay_kernel_zeta_, epoch_states_[epoch-delta-1]->comm_states_[c]->parti_counts_);
           for(r = 0; r < e->size_participants_; r++)
-            e->comm_states_[c]->decay_kernel_zeta_by_r_[r] = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->comm_states_[c]->parti_counts_by_r_[r],
+            e->comm_states_[c]->decay_kernel_zeta_by_r_[r] = ComputeKernel(lambda_con, delta, epoch_states_[epoch-1]->comm_states_[c]->parti_counts_by_r_[r],
                 epoch_states_[epoch-1]->comm_states_[c]->decay_kernel_zeta_by_r_[r], epoch_states_[epoch-delta-1]->comm_states_[c]->parti_counts_by_r_[r]);
         }
         else if(epoch_states_[epoch-1]->num_comms_init_ > c)
@@ -1615,19 +2735,19 @@ void DtcState::InitNextEpoch(int epoch, double lambda, int delta)
               epoch_states_[epoch-1]->comm_states_[c]->decay_kernel_num_docs_);
           e->comm_states_[c]->decay_kernel_word_counts_ = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->comm_states_[c]->word_counts_,
               epoch_states_[epoch-1]->comm_states_[c]->decay_kernel_word_counts_);
-          e->comm_states_[c]->decay_kernel_zeta_ = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->comm_states_[c]->parti_counts_,
+          e->comm_states_[c]->decay_kernel_zeta_ = ComputeKernel(lambda_con, delta, epoch_states_[epoch-1]->comm_states_[c]->parti_counts_,
               epoch_states_[epoch-1]->comm_states_[c]->decay_kernel_zeta_);
           for(r = 0; r < e->size_participants_; r++)
-            e->comm_states_[c]->decay_kernel_zeta_by_r_[r] = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->comm_states_[c]->parti_counts_by_r_[r],
+            e->comm_states_[c]->decay_kernel_zeta_by_r_[r] = ComputeKernel(lambda_con, delta, epoch_states_[epoch-1]->comm_states_[c]->parti_counts_by_r_[r],
                 epoch_states_[epoch-1]->comm_states_[c]->decay_kernel_zeta_by_r_[r]);
         }
         else    //a community burned in epoch-1
         {
           e->comm_states_[c]->decay_kernel_num_docs_ = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->comm_states_[c]->num_docs_);
           e->comm_states_[c]->decay_kernel_word_counts_ = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->comm_states_[c]->word_counts_);
-          e->comm_states_[c]->decay_kernel_zeta_ = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->comm_states_[c]->parti_counts_);
+          e->comm_states_[c]->decay_kernel_zeta_ = ComputeKernel(lambda_con, delta, epoch_states_[epoch-1]->comm_states_[c]->parti_counts_);
           for(r = 0; r < e->size_participants_; r++)
-            e->comm_states_[c]->decay_kernel_zeta_by_r_[r] = ComputeKernel(lambda, delta, epoch_states_[epoch-1]->comm_states_[c]->parti_counts_by_r_[r]);
+            e->comm_states_[c]->decay_kernel_zeta_by_r_[r] = ComputeKernel(lambda_con, delta, epoch_states_[epoch-1]->comm_states_[c]->parti_counts_by_r_[r]);
         }
         total_kernel += e->comm_states_[c]->decay_kernel_num_docs_;
 

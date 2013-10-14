@@ -171,9 +171,9 @@ void Corpus::ReadData(const char* filename)
 
   fclose(file_ptr); // close the file
 
-  printf("number of epoches  :  %d\n", num_epoches_);
-  printf("size of participants  :  %d\n", size_participants_);
-  printf("number of docs  :  %d\n", nd);
-  printf("number of terms :  %d\n", nw);
-  printf("number of total tokens  :  %d\n", total_tokens_);
+  printf("number of epoches             :  %d\n", num_epoches_);
+  printf("total size of participants    :  %d\n", size_participants_);
+  printf("total number of docs          :  %d\n", nd);
+  printf("total number of terms         :  %d\n", nw);
+  printf("total number of total tokens  :  %d\n", total_tokens_);
 }

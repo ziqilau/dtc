@@ -32,7 +32,7 @@ double log_sum(double log_a, double log_b);
 double log_normalize(double* array, int nlen);
 double log_normalize(vector<double>& vec, int nlen);
 double log_subtract(double log_a, double log_b);
-double log_factorial(int n, double a);
+double log_factorial(double n, double a);
 double similarity(const int* v1, const int* v2, int n);
 
 bool   file_exists(const char* filename);

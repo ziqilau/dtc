@@ -17,7 +17,8 @@ public:
   ~Dtc();
   void SetupStateFromCorpus(DtcHyperPara* hyper_para, Corpus* c);
   void BatchEstimate();
-  void OnlineEstimate();
+  void OnlineEstimate(const char* directory, int epoch_start);
+  void Inference(const char* directory, int epoch_start);
 
 public:
   DtcHyperPara* dtc_hyper_para_;

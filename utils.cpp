@@ -107,9 +107,9 @@ bool dir_exists(const char * directory)
  *
  **/
 
-double log_factorial(int n, double a)
+double log_factorial(double n, double a)
 {
-    if (n == 0) return 0.0;
+    if (n == 0.0) return 0.0;
     double v = lgamma(n+a) - lgamma(a);
     return v;
 }

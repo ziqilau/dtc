@@ -16,7 +16,10 @@ class DtcHyperPara
 {
 public:
   DtcHyperPara();
-  void SetPara();
+  void SetPara(double alpha, double beta, double gamma,
+              double tau, double zeta, double lambda, double lambda_con,
+              int max_iter, int save_lag, int delta, int burnin,
+              bool sample_hyperparameter, bool metropolis);
 
 public:
   double zeta_;
@@ -24,12 +27,14 @@ public:
   double alpha_;
   double beta_;
   double gamma_;
-  double lambda_;               //bigger the lambda, smoother the epoch weights, default is 4.0
-  int delta_;                   //default epoches number is 5, this value must greater than 0
+  double lambda_;               //bigger the lambda, smoother the epoch weights, default is 0.5~1.0
+  double lambda_con_;
+  int delta_;                   //default epoches number is 4, this value must greater than 0
   int save_lag_;
   bool metropolis_hastings_;
   bool sample_hyperparameter_;
   int max_iter_;
+  int burnin_;
 };
 
 struct TokenState
@@ -60,6 +65,7 @@ public:
 class CommState
 {
 public:
+  CommState();
   explicit CommState(int num_tables);
   CommState(int num_tables, int size_participants);
   CommState(CommState* c_state, int size_participants);
@@ -91,8 +97,10 @@ public:
 class EpochState
 {
 public:
+  EpochState(int e_id, int size_vocab, int size_participants);
   EpochState(Corpus* c, int e_id);
   EpochState(EpochState* e, DocState* d, int comm);
+  EpochState();
   ~EpochState();
   void RemoveWord(DocState* doc_state, int word_index);
   void AddWord(DocState* doc_state, int word_index, int k);
@@ -113,12 +121,24 @@ public:
       vector<double>& f, DtcHyperPara* hyper);
   void CompactEpochStates();
   void InitEpochGibbsState(DtcHyperPara* hyper);
-  void NextEpochGibbsSweep(bool permute, DtcHyperPara* hyper);
+  double NextEpochGibbsSweep(bool permute, DtcHyperPara* hyper);
   void ReshuffleEpoch();
-  double comm_partition_likelihood(CommState* c_state, DtcHyperPara* hyper);
-  double table_partition_likelihood(DtcHyperPara* hyper);
-  double data_likelihood(DtcHyperPara* hyper);
+  double DocPartitionLikelihood(DtcHyperPara* hyper);
+  double CommPartitionLikelihood(CommState* c_state, DtcHyperPara* hyper);
+  double TablePartitionLikelihood(DtcHyperPara* hyper);
+  double DataLikelihood(DtcHyperPara* hyper);
   double JointLikelihood(DtcHyperPara* hyper);
+  double GetPerplexity(DtcHyperPara* hyper);
+  double GetPerplexityNosum(DtcHyperPara* hyper);
+  double GetPartiLhood(DocState* d, int comm, DtcHyperPara* hyper);
+  double GetWordLhood(DocState* d, int comm, DtcHyperPara* hyper);
+  void CommPropGivenDoc(DocState* d_state, double* q_c, DtcHyperPara* hyper);
+  void SaveState(const char* directory);
+  void SaveState(const char* directory, int iter);
+  void SaveModel(const char* directory);
+  void LoadModel(const char* directory, int epoch);
+  bool StateCheckSum();
+  void EpochDebug();
 
 public:
   //epoch-level info
@@ -157,7 +177,8 @@ public:
   ~DtcState();
   void Reshuffle();
   double ComputeKernel(double lambda, int delta, int v1, double v2 = 0.0, int v3 = 0);
-  void InitNextEpoch(int epoch, double lambda, int delta);
+  void InitNextEpoch(int epoch, double lambda, double lambda_con, int delta);
+  void InitNextEpochInfer(int epoch, double lambda, double lambda_con, int delta);
   //void NextGibbsSweep(bool permute, DtcHyperPara* hyper);
 
 public:
